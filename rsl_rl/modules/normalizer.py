@@ -16,7 +16,7 @@ class EmpiricalNormalization(nn.Module):
 
         Args:
             shape (int or tuple of int): Shape of input values except batch axis.
-            eps (float): Small value for stability.
+            eps (float): Small value for stability. eps是一个很小的数, 用于防止除0错误
             until (int or None): If this arg is specified, the link learns input values until the sum of batch sizes
             exceeds it.
         """
@@ -57,16 +57,17 @@ class EmpiricalNormalization(nn.Module):
         if self.until is not None and self.count >= self.until:
             return
 
-        count_x = x.shape[0]
-        self.count += count_x
-        rate = count_x / self.count
+        count_x = x.shape[0] # 这个是获取的batch size的大小，反映在rsl-rl的强化学习结构中，应该是环境的数量
+        self.count += count_x # 更新总样本的数量
+        rate = count_x / self.count # 计算当前批次的样本数占总处理的样本数的比例，用于更新mean和var时的权重
 
-        var_x = torch.var(x, dim=0, unbiased=False, keepdim=True)
-        mean_x = torch.mean(x, dim=0, keepdim=True)
-        delta_mean = mean_x - self._mean
-        self._mean += rate * delta_mean
+        var_x = torch.var(x, dim=0, unbiased=False, keepdim=True) # 沿着第0维度计算方差，unbiased=False表示计算的是有偏方差(除以n)，keepdim=True表示保持维度
+        mean_x = torch.mean(x, dim=0, keepdim=True) # 沿着第0维度计算均值，keepdim=True表示保持维度
+        delta_mean = mean_x - self._mean # 计算新均值和当前均值的差
+        self._mean += rate * delta_mean # 利用计算出的rate更新mean
         self._var += rate * (var_x - self._var + delta_mean * (mean_x - self._mean))
-        self._std = torch.sqrt(self._var)
+        # NOTE: 这里的均值和方差的更新公式是根据Welford's online algorithm来的
+        self._std = torch.sqrt(self._var) # 标准差是方差的开方
 
     @torch.jit.unused
     def inverse(self, y):

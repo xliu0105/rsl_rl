@@ -99,23 +99,24 @@ class RolloutStorage:
             self.saved_hidden_states_c[i][self.step].copy_(hid_c[i])
 
     def clear(self):
-        self.step = 0
+        self.step = 0  # 每一次update后，都需要调用clear函数，将step清零，这个step使用在add_transitions函数中，用于记录当前的step
 
+    # 这一部分计算advantage用的是GAE方法(General Advantage Estimation)
     def compute_returns(self, last_values, gamma, lam):
         advantage = 0
-        for step in reversed(range(self.num_transitions_per_env)):
+        for step in reversed(range(self.num_transitions_per_env)): # 注意这里是倒序循环
             if step == self.num_transitions_per_env - 1:
                 next_values = last_values
             else:
                 next_values = self.values[step + 1]
-            next_is_not_terminal = 1.0 - self.dones[step].float()
-            delta = self.rewards[step] + next_is_not_terminal * gamma * next_values - self.values[step]
+            next_is_not_terminal = 1.0 - self.dones[step].float() # 如果是终止状态，则next_is_not_terminal=0，否则为1
+            delta = self.rewards[step] + next_is_not_terminal * gamma * next_values - self.values[step] # 计算TD error
             advantage = delta + next_is_not_terminal * gamma * lam * advantage
-            self.returns[step] = advantage + self.values[step]
+            self.returns[step] = advantage + self.values[step] # 按照advantage的定义，A = Q - V，所以Q = A + V
 
         # Compute and normalize the advantages
         self.advantages = self.returns - self.values
-        self.advantages = (self.advantages - self.advantages.mean()) / (self.advantages.std() + 1e-8)
+        self.advantages = (self.advantages - self.advantages.mean()) / (self.advantages.std() + 1e-8) # 对advantages进行归一化
 
     def get_statistics(self):
         done = self.dones
@@ -127,17 +128,23 @@ class RolloutStorage:
         trajectory_lengths = done_indices[1:] - done_indices[:-1]
         return trajectory_lengths.float().mean(), self.rewards.mean()
 
+    # 注意区分mini_batchs和num_epochs的区别，epochs是对这个数据集进行多少次迭代，每个epochs包含若干个mini_batchs，这里的num_mini_batches就是mini_batchs的数量
     def mini_batch_generator(self, num_mini_batches, num_epochs=8):
-        batch_size = self.num_envs * self.num_transitions_per_env
-        mini_batch_size = batch_size // num_mini_batches
+        # 由于这里并没有使用循环网络，而且已经对每个环境的每个step计算了advantage和returns，因此之后可以对每个step进行单独考虑
+        batch_size = self.num_envs * self.num_transitions_per_env # 总的batch_size就是环境的数量乘以每个环境的step数量
+        mini_batch_size = batch_size // num_mini_batches # 计算一个mini_batch的size大小
+        # torch.randperm(n)用于生成一个0到n-1的随机排列的整数
         indices = torch.randperm(num_mini_batches * mini_batch_size, requires_grad=False, device=self.device)
 
-        observations = self.observations.flatten(0, 1)
-        if self.privileged_observations is not None:
+        # 这里的flatten函数是将一个多维的张量按照指定的维度展平，这里是将第0维和第1维展平
+        observations = self.observations.flatten(0, 1) # 展平后的维度是(num_transitions_per_env * num_envs, obs_shape)
+        # 补充flatten的用法：torch.flatten(input, start_dim=0, end_dim=-1) -> Tensor，也可以直接对tensor变量使用.flatten方法。用于将start_dim到end_dim之间的维度展平
+        if self.privileged_observations is not None: # 如果使用了critic的非对称观测，则对critic的观测进行展平，否则就直接使用actor的观测
             critic_observations = self.privileged_observations.flatten(0, 1)
         else:
             critic_observations = observations
 
+        # 对所有的数据进行展平
         actions = self.actions.flatten(0, 1)
         values = self.values.flatten(0, 1)
         returns = self.returns.flatten(0, 1)
@@ -148,9 +155,9 @@ class RolloutStorage:
 
         for epoch in range(num_epochs):
             for i in range(num_mini_batches):
-                start = i * mini_batch_size
+                start = i * mini_batch_size # 计算每个mini_batch的起始和终止位置
                 end = (i + 1) * mini_batch_size
-                batch_idx = indices[start:end]
+                batch_idx = indices[start:end] # 根据起始和终止位置，获取对应的indices，注意到indices是一个随机排列的整数
 
                 obs_batch = observations[batch_idx]
                 critic_observations_batch = critic_observations[batch_idx]
@@ -165,6 +172,8 @@ class RolloutStorage:
                     None,
                     None,
                 ), None
+        # IMPORTANT: 使用了yield的函数会被视为生成器函数。当调用这个函数时，函数内的代码不会立即执行，而是返回一个生成器对象。生成器对象在执行过程中，每遇到一个yield语句就会返回
+        # 一个值，并且暂停执行，直到下次迭代请求时再继续从上次暂停的地方开始执行。
 
     # for RNNs only
     def reccurent_mini_batch_generator(self, num_mini_batches, num_epochs=8):

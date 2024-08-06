@@ -53,6 +53,7 @@ class VecEnv(ABC):
     Operations.
     """
 
+    # 在on_policy_runner.py的__init__函数就会调用这个函数，因此这个函数必须能够获取环境最一开始的观测值，在dict中，如果需要用到非对称观测，则需要在dict中添加"critic"这个key
     @abstractmethod
     def get_observations(self) -> tuple[torch.Tensor, dict]:
         """Return the current observations.
