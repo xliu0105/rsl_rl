@@ -49,8 +49,8 @@ class OnPolicyRunner:
             self.critic_obs_normalizer = EmpiricalNormalization(shape=[num_critic_obs], until=1.0e8).to(self.device)
         else:
             # torch.nn.Identity()是不对传递给他的数据进行任何处理，直接返回传递给他的数据
-            self.obs_normalizer = torch.nn.Identity()  # no normalization
-            self.critic_obs_normalizer = torch.nn.Identity()  # no normalization
+            self.obs_normalizer = torch.nn.Identity().to(self.device)  # no normalization
+            self.critic_obs_normalizer = torch.nn.Identity().to(self.device)  # no normalization
         # init storage and model
         self.alg.init_storage( # 要注意调用init_storage函数，这个函数需要手动初始化，应该是用来储存replay_buffer的还是用来储存multi-step过程中的数据的？(大概率后者)
             self.env.num_envs,
@@ -114,22 +114,25 @@ class OnPolicyRunner:
             with torch.inference_mode(): # 设置只进行模型的前向传播，不进行梯度的计算
                 for i in range(self.num_steps_per_env): # 在每个环境中执行num_steps_per_env次step
                     actions = self.alg.act(obs, critic_obs) # 虽然这里只获取了actions，但是在act函数中还会计算critic的value等其他各种值
-                    obs, rewards, dones, infos = self.env.step(actions) # 在环境中执行一次step，返回的是obs, rewards, dones, infos
+                    obs, rewards, dones, infos = self.env.step(actions.to(self.env.device)) # 在环境中执行一次step，返回的是obs, rewards, dones, infos
                     # 其实这里还可以参考其他论文对rewards的处理，设计一个exp函数来重塑reward的分布
                     if only_positive_rewards: # MODIFIED: 这里做了修改，如果only_positive_rewards为True，那么负的reward会被clip成0
                         rewards = torch.clamp(rewards, min=0.0)
-                    obs = self.obs_normalizer(obs) # 对obs进行归一化
-                    if "critic" in infos["observations"]:# 这里应该是用来处理非对称的observation的，有些时候critic可以观测到更多actor看不到的信息，以为critic只在训练的时候用到
-                        critic_obs = self.critic_obs_normalizer(infos["observations"]["critic"]) # 对critic_obs进行归一化
-                    else:
-                        critic_obs = obs
+                    # move to the right device
                     obs, critic_obs, rewards, dones = ( # 将obs, critic_obs, rewards, dones放到device上
                         obs.to(self.device),
                         critic_obs.to(self.device),
                         rewards.to(self.device),
                         dones.to(self.device),
                     )
-                    self.alg.process_env_step(rewards, dones, infos) # 处理time-out的情况，并将各类信息储存到storage中
+                    # perform normalization
+                    obs = self.obs_normalizer(obs) # 对obs进行归一化
+                    if "critic" in infos["observations"]: # 这里应该是用来处理非对称的observation的，有些时候critic可以观测到更多actor看不到的信息，以为critic只在训练的时候用到
+                        critic_obs = self.critic_obs_normalizer(infos["observations"]["critic"]) # 对critic_obs进行归一化
+                    else:
+                        critic_obs = obs
+                    # process the step
+                    self.alg.process_env_step(rewards, dones, infos)
 
                     if self.log_dir is not None:
                         # Book keeping
